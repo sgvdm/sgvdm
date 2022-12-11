@@ -1,0 +1,89 @@
+##Powershell code to get actual duration of scheduled tasks since this was not readily available. This was formerly on Technet.
+
+$users = "Who you want to send to" # List of users to email your report to (separate by comma)
+$fromemail = "Who you want it from>"
+$server = "mail servers"
+
+
+$head=@"
+<style>
+@charset "UTF-8";
+
+table
+{
+font-family:"Trebuchet MS", Arial, Helvetica, sans-serif;
+border-collapse:collapse;
+}
+td 
+{
+font-size:1em;
+border:1px solid #98bf21;
+padding:5px 5px 5px 5px;
+}
+th 
+{
+font-size:1.1em;
+text-align:center;
+padding-top:5px;
+padding-bottom:5px;
+padding-right:7px;
+padding-left:7px;
+background-color:#A7C942;
+color:#ffffff;
+}
+name tr
+{
+color:#F00000;
+background-color:#EAF2D3;
+}
+</style>
+"@
+
+
+$FileName = "C:\Support\Durations.txt"
+if (Test-Path $FileName) 
+{
+  Remove-Item $FileName -force
+  }
+
+#remove-item -path "C:\Support\Durations.txt" -force
+
+
+$Servername = "ServerA","ServerB”
+
+foreach ($pc in $Servername ) {
+Write-Verbose "Testing $pc"
+  $EventFilter = @{
+    LogName = 'Microsoft-Windows-TaskScheduler/Operational'
+    Id = 100
+    StartTime = [datetime]::Now.AddDays(-1)
+}
+# PropertySelector for the Correlation id (the InstanceId) and task name
+[string[]]$PropertyQueries = @(
+    'Event/EventData/Data[@Name="InstanceId"]'
+    'Event/EventData/Data[@Name="TaskName"]'
+)
+$PropertySelector = New-Object System.Diagnostics.Eventing.Reader.EventLogPropertySelector @(,$PropertyQueries)
+# Loop through the start events
+$TaskInvocations = foreach($StartEvent in Get-WinEvent -FilterHashtable $EventFilter -Computer $pc ){
+    # Grab the InstanceId and Task Name from the start event
+    $InstanceId,$TaskName = $StartEvent.GetPropertyValues($PropertySelector)
+
+    # Create custom object with the name and start event, query end event by InstanceId
+    [pscustomobject]@{
+        Computer = $pc
+        TaskName = $TaskName
+        StartTime = $StartEvent.TimeCreated
+        EndTime = $(Get-WinEvent -FilterXPath  "*[System[(EventID=102)] and EventData[Data[@Name=""InstanceId""] and Data=""{$InstanceId}""]]" -LogName 'Microsoft-Windows-TaskScheduler/Operational'-Computer $pc -ErrorAction SilentlyContinue).TimeCreated
+        
+    } 
+} 
+
+$TaskInvocations  | where-object {$_.TaskName -like '*\FILLINFOLDERNAME\*'}  | Select Computer, TaskName, StartTime, EndTime, @{L='Duration';E={$_.EndTime - $_.StartTime}}  | ConvertTo-Html -Head $head | Out-File -filepath 'c:\Support\Durations.txt' -Append
+
+}
+
+
+
+Send-MailMessage -to $users -from $fromemail -Subject " Duration report for Task Scheduler Critical tasks" -Body  (get-content "c:\Support\Durations.txt" -RAW ) -BodyAsHTML -smtpServer $server
+
